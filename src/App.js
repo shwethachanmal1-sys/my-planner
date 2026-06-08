@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+/* eslint-disable react-hooks/exhaustive-deps */
+import React from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
@@ -84,7 +86,6 @@ function weekKey(d = new Date()) {
   const mon = new Date(d); mon.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
   return `week-${dateKey(mon)}`;
 }
-function yearKey(d = new Date()) { return d.getFullYear(); }
 
 function load(key, fb) {
   try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fb; }
@@ -173,7 +174,7 @@ export default function App() {
   const [insight, setInsight] = useState(null);
   const [insightLoading, setInsightLoading] = useState(false);
   const [savedInsights, setSavedInsights] = useState(() => load("planner_savedInsights", []));
-  const [library, setLibrary] = useState(() => load("planner_library", SAMPLE_BOOKS));
+  const [library] = useState(() => load("planner_library", SAMPLE_BOOKS));
   const [learnStreak, setLearnStreak] = useState(() => load("planner_learnStreak", 0));
   const [lastLearnDate, setLastLearnDate] = useState(() => load("planner_lastLearnDate", ""));
   const [cardFlipped, setCardFlipped] = useState(false);
@@ -615,7 +616,7 @@ export default function App() {
               const oH = DEFAULT_OFFICE_HABITS.filter(h=>d.officeHabits?.[h.id]).length;
               const pH = DEFAULT_PERSONAL_HABITS.filter(h=>d.personalHabits?.[h.id]).length;
               const achs = d.achievements||[];
-              const ideas = d.ideas||[];
+
               return (
                 <div style={{ ...G.card, padding:16, marginTop:16 }}>
                   <div style={{ fontSize:13, color: COLORS.cyan, marginBottom:10, fontWeight:700 }}>{selectedCalDay}</div>
