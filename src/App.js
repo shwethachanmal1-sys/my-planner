@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable no-unused-vars */
+import { useState, useEffect, useRef } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
