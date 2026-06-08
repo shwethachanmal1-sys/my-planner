@@ -1,6 +1,4 @@
-/* eslint-disable react-hooks/exhaustive-deps */
-import React from "react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DAYS_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
@@ -87,18 +85,60 @@ function weekKey(d = new Date()) {
   return `week-${dateKey(mon)}`;
 }
 
+// ── Persistent storage API (cloud) + localStorage fallback ───────────────────
+// Keys must be under 200 chars, no spaces/slashes/quotes
+function sanitizeKey(key) {
+  return key.replace(/[^a-zA-Z0-9_\-:.]/g, "_");
+}
+
+async function cloudSave(key, val) {
+  const k = sanitizeKey(key);
+  try {
+    // Also mirror to localStorage for fast reads
+    localStorage.setItem(k, JSON.stringify(val));
+  } catch {}
+  try {
+    await window.storage.set(k, JSON.stringify(val));
+  } catch {}
+}
+
+async function cloudLoad(key, fb) {
+  const k = sanitizeKey(key);
+  try {
+    const result = await window.storage.get(k);
+    if (result && result.value !== undefined) {
+      return JSON.parse(result.value);
+    }
+  } catch {}
+  // Fallback to localStorage
+  try {
+    const v = localStorage.getItem(k);
+    if (v !== null) return JSON.parse(v);
+  } catch {}
+  return fb;
+}
+
+// Sync versions for initial state (uses localStorage only — cloud loaded async)
 function load(key, fb) {
-  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fb; }
+  const k = sanitizeKey(key);
+  try { const v = localStorage.getItem(k); return v !== null ? JSON.parse(v) : fb; }
   catch { return fb; }
 }
-function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+function save(key, val) {
+  const k = sanitizeKey(key);
+  try { localStorage.setItem(k, JSON.stringify(val)); } catch {}
+  // Fire-and-forget cloud save
+  cloudSave(k, val);
+}
+
+const EMPTY_DAY = () => ({
+  officeHabits: {}, personalHabits: {}, pages: 0,
+  officeTodos: [], personalTodos: [], journal: {},
+  achievements: [], ideas: [], goals: [],
+});
 
 function getDayData(dk) {
-  return load(`planner_day_${dk}`, {
-    officeHabits: {}, personalHabits: {}, pages: 0,
-    officeTodos: [], personalTodos: [], journal: {},
-    achievements: [], ideas: [], goals: [],
-  });
+  return load(`planner_day_${dk}`, EMPTY_DAY());
 }
 function saveDayData(dk, data) { save(`planner_day_${dk}`, data); }
 
@@ -147,12 +187,14 @@ export default function App() {
   const now = new Date();
 
   const [tab, setTab] = useState("today");
-  const [workspaceTab, setWorkspaceTab] = useState("office"); // office|personal under today
+  const [workspaceTab, setWorkspaceTab] = useState("office");
+  const [viewDK, setViewDK] = useState(todayDK);
   const [dayData, setDayData] = useState(() => getDayData(todayDK));
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | synced | error
   const [goals, setGoals] = useState(() => load("planner_goals_v2", []));
   const [reminders, setReminders] = useState(() => load("planner_reminders", DEFAULT_REMINDERS));
   const [alarms, setAlarms] = useState(() => load("planner_alarms", []));
-  const [notification, setNotification] = useState(null); // { title, body, color }
+  const [notification, setNotification] = useState(null);
   const [alarmFiring, setAlarmFiring] = useState(null);
   const [showAddReminder, setShowAddReminder] = useState(false);
   const [showAddAlarm, setShowAddAlarm] = useState(false);
@@ -182,8 +224,69 @@ export default function App() {
   const [clockStr, setClockStr] = useState("");
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "denied");
 
-  // Save day data on change
-  useEffect(() => { saveDayData(todayDK, dayData); }, [dayData]);
+  // ── Cloud sync on mount: pull latest data from persistent storage ────────
+  useEffect(() => {
+    async function syncFromCloud() {
+      setSyncStatus("syncing");
+      try {
+        const [dd, gl, rem, al, si, wr] = await Promise.all([
+          cloudLoad(`planner_day_${todayDK}`, null),
+          cloudLoad("planner_goals_v2", null),
+          cloudLoad("planner_reminders", null),
+          cloudLoad("planner_alarms", null),
+          cloudLoad("planner_savedInsights", null),
+          cloudLoad(`planner_weekreview_${todayWK}`, null),
+        ]);
+        if (dd) setDayData(dd);
+        if (gl) setGoals(gl);
+        if (rem) setReminders(rem);
+        if (al) setAlarms(al);
+        if (si) setSavedInsights(si);
+        if (wr) setWeekReview(wr);
+        setSyncStatus("synced");
+        setTimeout(() => setSyncStatus("idle"), 2000);
+      } catch {
+        setSyncStatus("error");
+        setTimeout(() => setSyncStatus("idle"), 3000);
+      }
+    }
+    syncFromCloud();
+  }, []);
+
+  // ── Cloud sync when navigating to a different date ───────────────────────
+  async function loadDayFromCloud(dk) {
+    setSyncStatus("syncing");
+    try {
+      const dd = await cloudLoad(`planner_day_${dk}`, EMPTY_DAY());
+      setDayData(dd);
+      setSyncStatus("synced");
+      setTimeout(() => setSyncStatus("idle"), 1500);
+    } catch {
+      setDayData(getDayData(dk));
+      setSyncStatus("idle");
+    }
+  }
+
+  // Save day data on change — always saves to the date being viewed
+  useEffect(() => { saveDayData(viewDK, dayData); }, [dayData, viewDK]);
+
+  // Navigate to a different date
+  function navigateDay(offset) {
+    const d = new Date(viewDK + "T12:00:00");
+    d.setDate(d.getDate() + offset);
+    const newDK = dateKey(d);
+    setViewDK(newDK);
+    setNewTodo(""); setNewIdea(""); setNewAchievement("");
+    loadDayFromCloud(newDK);
+  }
+  function goToDate(dk) {
+    setViewDK(dk);
+    setNewTodo(""); setNewIdea(""); setNewAchievement("");
+    loadDayFromCloud(dk);
+  }
+  const isToday = viewDK === todayDK;
+  const isFuture = viewDK > todayDK;
+  const viewDate = new Date(viewDK + "T12:00:00");
   useEffect(() => { save("planner_goals_v2", goals); }, [goals]);
   useEffect(() => { save("planner_reminders", reminders); }, [reminders]);
   useEffect(() => { save("planner_alarms", alarms); }, [alarms]);
@@ -392,15 +495,24 @@ export default function App() {
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
             <div>
               <div style={{ fontSize:11, letterSpacing:"0.2em", color: COLORS.muted, textTransform:"uppercase" }}>
-                {DAYS_FULL[now.getDay()]} · Week {getWeekNumber(now)} · {now.getFullYear()}
+                {DAYS_FULL[viewDate.getDay()]} · Week {getWeekNumber(viewDate)} · {viewDate.getFullYear()}
               </div>
-              <div style={{ fontSize:22, fontWeight:400, color: COLORS.text, letterSpacing:"-0.02em", marginTop:2 }}>
-                {MONTHS[now.getMonth()]} {now.getDate()}, {now.getFullYear()}
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:2 }}>
+                <button onClick={()=>navigateDay(-1)} style={{ background:"none", border:`1px solid ${COLORS.border}`, borderRadius:6, color: COLORS.muted, fontSize:16, cursor:"pointer", padding:"2px 8px", lineHeight:1 }}>‹</button>
+                <div style={{ fontSize:18, fontWeight:400, color: isToday ? COLORS.cyan : COLORS.text, letterSpacing:"-0.02em" }}>
+                  {MONTHS[viewDate.getMonth()]} {viewDate.getDate()}, {viewDate.getFullYear()}
+                  {isToday && <span style={{ fontSize:11, color: COLORS.cyan, marginLeft:6 }}>TODAY</span>}
+                  {!isToday && <span style={{ fontSize:11, color: COLORS.orange, marginLeft:6, cursor:"pointer" }} onClick={()=>goToDate(todayDK)}>→ Today</span>}
+                </div>
+                <button onClick={()=>navigateDay(1)} disabled={isFuture} style={{ background:"none", border:`1px solid ${isFuture?COLORS.dim:COLORS.border}`, borderRadius:6, color: isFuture?COLORS.dim:COLORS.muted, fontSize:16, cursor: isFuture?"not-allowed":"pointer", padding:"2px 8px", lineHeight:1 }}>›</button>
               </div>
             </div>
             <div style={{ textAlign:"right" }}>
               <div style={{ fontSize:18, fontWeight:700, color: allComplete ? COLORS.green : COLORS.purple, fontVariantNumeric:"tabular-nums" }}>{clockStr}</div>
               <div style={{ display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", marginTop:4 }}>
+                {syncStatus === "syncing" && <span style={{ fontSize:9, color: COLORS.cyan, letterSpacing:"0.1em" }}>⟳ SAVING</span>}
+                {syncStatus === "synced" && <span style={{ fontSize:9, color: COLORS.green, letterSpacing:"0.1em" }}>✓ SAVED</span>}
+                {syncStatus === "error" && <span style={{ fontSize:9, color: COLORS.orange, letterSpacing:"0.1em" }}>⚠ LOCAL</span>}
                 <div style={{ width:48, height:6, background: COLORS.border, borderRadius:3 }}>
                   <div style={{ height:"100%", width:`${progressPct}%`, background: allComplete ? COLORS.green : `linear-gradient(90deg,${COLORS.purple},${COLORS.cyan})`, borderRadius:3, transition:"width 0.5s" }} />
                 </div>
@@ -410,21 +522,22 @@ export default function App() {
             </div>
           </div>
 
-          {/* Week strip */}
+          {/* Week strip — clicking a day navigates to it */}
           <div style={{ display:"flex", gap:6, marginTop:10 }}>
             {getWeekDays().map(({ date, dk }) => {
-              const isToday = dk === todayDK;
+              const isTodayCell = dk === todayDK;
+              const isViewing = dk === viewDK;
               const col = getDayColor(dk);
               return (
-                <div key={dk} style={{ flex:1, textAlign:"center" }}>
-                  <div style={{ fontSize:9, color: isToday ? COLORS.cyan : COLORS.muted, marginBottom:3 }}>{DAYS_SHORT[date.getDay()]}</div>
+                <div key={dk} onClick={()=>{ setTab("today"); goToDate(dk); }} style={{ flex:1, textAlign:"center", cursor:"pointer" }}>
+                  <div style={{ fontSize:9, color: isTodayCell ? COLORS.cyan : COLORS.muted, marginBottom:3 }}>{DAYS_SHORT[date.getDay()]}</div>
                   <div style={{
                     width:"100%", paddingBottom:"100%", borderRadius:6, position:"relative",
-                    background: col || (isToday ? "#1e1e3a" : COLORS.card),
-                    border: `1px solid ${isToday ? COLORS.cyan : col || COLORS.border}`,
-                    boxShadow: col === COLORS.green ? `0 0 8px ${COLORS.green}44` : "none",
+                    background: col || (isTodayCell ? "#1e1e3a" : COLORS.card),
+                    border: `2px solid ${isViewing ? COLORS.cyan : isTodayCell ? COLORS.purple : col || COLORS.border}`,
+                    boxShadow: col === COLORS.green ? `0 0 8px ${COLORS.green}44` : isViewing ? `0 0 8px ${COLORS.cyan}44` : "none",
                   }}>
-                    <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight: isToday ? 700 : 400, color: col ? "#000" : isToday ? COLORS.cyan : COLORS.muted }}>
+                    <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight: isTodayCell||isViewing ? 700 : 400, color: col ? "#000" : isViewing ? COLORS.cyan : isTodayCell ? COLORS.cyan : COLORS.muted }}>
                       {date.getDate()}
                     </span>
                   </div>
@@ -587,7 +700,7 @@ export default function App() {
               {calCells.map((cell, i) => !cell ? (
                 <div key={`e${i}`} />
               ) : (
-                <div key={cell.dk} onClick={()=>setSelectedCalDay(cell.dk===selectedCalDay?null:cell.dk)} style={{
+                <div key={cell.dk} onClick={()=>{ setSelectedCalDay(cell.dk===selectedCalDay?null:cell.dk); setTab("today"); goToDate(cell.dk); }} style={{
                   aspectRatio:"1", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center",
                   fontSize:13, fontWeight: cell.isToday ? 700 : 400, cursor:"pointer",
                   background: cell.color || (cell.isToday ? "#1e1e3a" : COLORS.card),
@@ -616,7 +729,7 @@ export default function App() {
               const oH = DEFAULT_OFFICE_HABITS.filter(h=>d.officeHabits?.[h.id]).length;
               const pH = DEFAULT_PERSONAL_HABITS.filter(h=>d.personalHabits?.[h.id]).length;
               const achs = d.achievements||[];
-
+              const ideas = d.ideas||[];
               return (
                 <div style={{ ...G.card, padding:16, marginTop:16 }}>
                   <div style={{ fontSize:13, color: COLORS.cyan, marginBottom:10, fontWeight:700 }}>{selectedCalDay}</div>
