@@ -224,47 +224,22 @@ export default function App() {
   const [clockStr, setClockStr] = useState("");
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "denied");
 
-  // ── Cloud sync on mount: pull latest data from persistent storage ────────
+  // ── On mount: load today's data from localStorage ───────────────────────
   useEffect(() => {
-    async function syncFromCloud() {
-      setSyncStatus("syncing");
-      try {
-        const [dd, gl, rem, al, si, wr] = await Promise.all([
-          cloudLoad(`planner_day_${todayDK}`, null),
-          cloudLoad("planner_goals_v2", null),
-          cloudLoad("planner_reminders", null),
-          cloudLoad("planner_alarms", null),
-          cloudLoad("planner_savedInsights", null),
-          cloudLoad(`planner_weekreview_${todayWK}`, null),
-        ]);
-        if (dd) setDayData(dd);
-        if (gl) setGoals(gl);
-        if (rem) setReminders(rem);
-        if (al) setAlarms(al);
-        if (si) setSavedInsights(si);
-        if (wr) setWeekReview(wr);
-        setSyncStatus("synced");
-        setTimeout(() => setSyncStatus("idle"), 2000);
-      } catch {
-        setSyncStatus("error");
-        setTimeout(() => setSyncStatus("idle"), 3000);
-      }
-    }
-    syncFromCloud();
+    setSyncStatus("syncing");
+    const dd = getDayData(todayDK);
+    setDayData(dd);
+    setSyncStatus("synced");
+    setTimeout(() => setSyncStatus("idle"), 1500);
   }, []);
 
-  // ── Cloud sync when navigating to a different date ───────────────────────
-  async function loadDayFromCloud(dk) {
+  // ── Load day data when navigating dates ─────────────────────────────────
+  function loadDayFromCloud(dk) {
     setSyncStatus("syncing");
-    try {
-      const dd = await cloudLoad(`planner_day_${dk}`, EMPTY_DAY());
-      setDayData(dd);
-      setSyncStatus("synced");
-      setTimeout(() => setSyncStatus("idle"), 1500);
-    } catch {
-      setDayData(getDayData(dk));
-      setSyncStatus("idle");
-    }
+    const dd = getDayData(dk);
+    setDayData(dd);
+    setSyncStatus("synced");
+    setTimeout(() => setSyncStatus("idle"), 1500);
   }
 
   // Save day data on change — always saves to the date being viewed
